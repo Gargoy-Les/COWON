@@ -1,0 +1,109 @@
+Index: firmware/target/arm/usb-tcc.c
+===================================================================
+--- firmware/target/arm/usb-tcc.c	(révision 20283)
++++ firmware/target/arm/usb-tcc.c	(copie de travail)
+@@ -263,25 +263,17 @@
+ static
+ void handle_ep_in(struct tcc_ep *tcc_ep, uint16_t stat)
+ {
+-    uint8_t *buf = tcc_ep->buf;
+-    uint16_t *wbuf = (uint16_t *) buf;
+-    int wcount;
+-    int count;
+-    int i;
++    unsigned char *buf = tcc_ep->buf;
++    int count, i;
+ 
+     if (tcc_ep->dir != USB_DIR_OUT) {
+-        panicf_my("ep%d: is input only", tcc_ep->id);
++            panicf_my("ep%d: is input only", tcc_ep->id);
+     }
+ 
+-    wcount = TCC7xx_USB_EP_BRCR;
++    count = TCC7xx_USB_EP_BRCR*2;
+ 
+-    DEBUG(2, "ep%d: %04x %04x", tcc_ep->id, stat, wcount);
+-
+-    /* read data */
+-    count = wcount * 2;
+     if (stat & TCC7xx_USP_EP_STAT_LWO) {
+         count--;
+-        wcount--;
+     }
+ 
+     if (buf == NULL)
+@@ -289,12 +281,17 @@
+     if (tcc_ep->max_len < count)
+         panicf_my("Too big packet: %d excepted %d %x", count, tcc_ep->max_len, TCC7xx_USB_EP_CTRL);
+ 
+-    for (i = 0; i < wcount; i++)
+-        wbuf[i] = *tcc_ep->ep;
+ 
+-    if (count & 1) { /* lwo */
+-        uint16_t tmp = *tcc_ep->ep;
+-        buf[count - 1] = tmp & 0xff;
++    i = 0;
++    while (i < count)
++    {
++        unsigned short d = *tcc_ep->ep;
++        if (i < count)
++            buf[i] = d & 0xff;
++        i++;
++        if (i < count)
++            buf[i] = (d >> 8) & 0xff;
++        i++;
+     }
+ 
+     tcc_ep->buf = NULL;
+@@ -477,7 +474,6 @@
+     }
+ 
+ //    TCC7xx_USB_SYS_STAT = sys_stat;
+-
+     index_save = TCC7xx_USB_INDEX;
+ 
+     ep_irq = TCC7xx_USB_EPIF & global_ep_irq_mask;
+@@ -505,17 +501,19 @@
+ 
+ static int usb_drv_write_packet(volatile unsigned short *buf, unsigned char *data, int len, int max)
+ {
+-    uint16_t  *wbuf = (uint16_t *) data;
+-    int count, i;
++    int i;
+ 
+     len = MIN(len, max);
+-    count = (len + 1) / 2;
+ 
+     TCC7xx_USB_EP_BWCR = len;
+ 
+-    for (i = 0; i < count; i++)
+-        *buf = *wbuf++;
+-
++    i = 0;
++    while (len - i >= 2) {
++        *buf = data[i] | (data[i + 1] << 8);
++        i += 2;
++    }
++    if (i < len)
++        *buf = data[i];
+     return len;
+ }
+ 
+@@ -574,7 +572,7 @@
+ int usb_drv_send_nonblocking(int endpoint, void *ptr, int length)
+ {
+     int flags;
+-    int rc = 0, count = length;
++    int rc = 0;
+     char *data = (unsigned char*) ptr;
+     struct tcc_ep *ep = &tcc_endpoints[endpoint & 0x7f];
+ 
+@@ -591,7 +589,7 @@
+ 
+     ep->buf = data;
+     ep->max_len = length;
+-    ep->count = count;
++    ep->count = 0;
+ 
+     TCC7xx_USB_INDEX = ep->id;
+ #if 1

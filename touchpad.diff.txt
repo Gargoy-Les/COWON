@@ -1,0 +1,649 @@
+Index: bootloader/mrobe500.c
+===================================================================
+--- bootloader/mrobe500.c	(revision 17107)
++++ bootloader/mrobe500.c	(working copy)
+@@ -117,7 +117,7 @@
+         printf("%d:%d:%d %d %d %d", t->tm_hour, t->tm_min, t->tm_sec, t->tm_mday, t->tm_mon, t->tm_year);
+         printf("time: %d", mktime(t));
+ #endif
+-        button = button_get(false);
++       button = button_get(false);
+         if (button == BUTTON_POWER)
+         {
+             printf("reset");
+@@ -143,8 +143,18 @@
+ // //            tsc2100_keyclick(); /* doesnt work :( */
+ //             line -= 6;
+ //         }
++        else if (button == BUTTON_RC_HEART)
++        {
++            printf("POINT");
++            touchpad_set_mode(TOUCHPAD_POINT);
++        }
++        else if (button == BUTTON_RC_MODE)
++        {
++            printf("BUTTON");
++            touchpad_set_mode(TOUCHPAD_BUTTON);
++        }
+ #if 1
+-        if (button&BUTTON_TOUCHPAD)
++        else if (button&BUTTON_TOUCHPAD)
+         {
+             if (button&BUTTON_REL)
+                 continue;
+@@ -152,11 +162,24 @@
+             int x = (data&0xffff0000)>>16, y = data&0x0000ffff;
+             reset_screen();
+             line = 9;
+-            printf("%x %d %d\n", button, x,y);
++            printf("BB: %x %d %d", button, x,y);
+             lcd_hline(x-5, x+5, y);
+             lcd_vline(x, y-5, y+5);
+             lcd_update();
+         }
++        else if (button == BUTTON_RC_PLAY)
++        {
++            reset_screen();
++        }
++            
++        else if (button)
++        {
++          //  if (button&BUTTON_REL)
++            {
++                printf("%08x %s\n", button, (button&BUTTON_REL)?"yes":"no");
++            }
++        }
++            
+ #endif
+     }
+ }
+Index: apps/action.h
+===================================================================
+--- apps/action.h	(revision 17107)
++++ apps/action.h	(working copy)
+@@ -25,14 +25,15 @@
+ #define TIMEOUT_NOBLOCK  0
+ 
+ #define CONTEXT_STOPSEARCHING 0xFFFFFFFF
+-#define CONTEXT_REMOTE 0x80000000 /* | this against another context to get remote buttons for that context */
+-#define CONTEXT_CUSTOM 0x40000000 /* | this against anything to get your context number */
++#define CONTEXT_REMOTE  0x80000000 /* | this against another context to get remote buttons for that context */
++#define CONTEXT_CUSTOM  0x40000000 /* | this against anything to get your context number */
++#define CONTEXT_CUSTOM2 0x20000000 /* as above */
+ 
+ #define LAST_ITEM_IN_LIST { CONTEXT_STOPSEARCHING, BUTTON_NONE, BUTTON_NONE }
+ #define LAST_ITEM_IN_LIST__NEXTLIST(a) { a, BUTTON_NONE, BUTTON_NONE }
+ 
+ #ifndef HAS_BUTTON_HOLD
+-#define ALLOW_SOFTLOCK 0x20000000 /* will be stripped.. never needed except in calls to get_action() */
++#define ALLOW_SOFTLOCK 0x10000000 /* will be stripped.. never needed except in calls to get_action() */
+ #else
+ #define ALLOW_SOFTLOCK 0
+ #endif
+@@ -79,6 +80,7 @@
+     ACTION_UNKNOWN,
+     ACTION_REDRAW, /* returned if keys are locked and we splash()'ed */
+     ACTION_TOUCHPAD,
++    ACTION_TOUCHPAD_MODE, /* toggle the touchpad mode */
+     
+     /* standard actions, use these first */
+     ACTION_STD_PREV, 
+Index: apps/SOURCES
+===================================================================
+--- apps/SOURCES	(revision 17107)
++++ apps/SOURCES	(working copy)
+@@ -138,6 +138,9 @@
+ #ifdef HAVE_TAGCACHE
+ tagcache.c
+ #endif
++#ifdef HAVE_TOUCHPAD
++keymaps/keymap-touchpad.c
++#endif
+ #if (CONFIG_KEYPAD == IRIVER_H100_PAD) \
+     || (CONFIG_KEYPAD == IRIVER_H300_PAD)
+ keymaps/keymap-h1x0_h3x0.c
+Index: apps/main.c
+===================================================================
+--- apps/main.c	(revision 17107)
++++ apps/main.c	(working copy)
+@@ -132,6 +132,9 @@
+         screens[i].update();
+     }
+     tree_gui_init();
++#ifdef HAVE_TOUCHPAD
++    touchpad_set_mode(TOUCHPAD_BUTTON);
++#endif
+     root_menu();
+ }
+ 
+@@ -446,7 +449,7 @@
+ #ifdef HAVE_EEPROM_SETTINGS
+     eeprom_settings_init();
+ #endif
+-    
++#if 0
+     usb_start_monitoring();
+ #ifndef HAVE_USBSTACK
+     while (usb_detect() == USB_INSERTED)
+@@ -470,7 +473,7 @@
+ #endif
+     }
+ #endif
+-
++#endif
+     if (!mounted)
+     {
+         rc = disk_mount_all();
+Index: apps/keymaps/keymap-mr500.c
+===================================================================
+--- apps/keymaps/keymap-mr500.c	(revision 17107)
++++ apps/keymaps/keymap-mr500.c	(working copy)
+@@ -17,7 +17,7 @@
+  *
+  ****************************************************************************/
+ 
+-/* Button Code Definitions for the toshiba gigabeat target */
++/* Button Code Definitions for the Olympus M:robe 500 target */
+ #include <stdio.h>
+ #include <string.h>
+ #include <stdlib.h>
+@@ -137,8 +137,7 @@
+     LAST_ITEM_IN_LIST
+ }; /* button_context_keyboard */
+ 
+-extern int current_tick;
+-const struct button_mapping* get_context_mapping(int context)
++const struct button_mapping* target_get_context_mapping(int context)
+ {
+     switch (context&(~CONTEXT_REMOTE))
+     {
+Index: apps/keymaps/keymap-touchpad.c
+===================================================================
+--- apps/keymaps/keymap-touchpad.c	(revision 0)
++++ apps/keymaps/keymap-touchpad.c	(revision 0)
+@@ -0,0 +1,211 @@
++/***************************************************************************
++ *             __________               __   ___.
++ *   Open      \______   \ ____   ____ |  | _\_ |__   _______  ___
++ *   Source     |       _//  _ \_/ ___\|  |/ /| __ \ /  _ \  \/  /
++ *   Jukebox    |    |   (  <_> )  \___|    < | \_\ (  <_> > <  <
++ *   Firmware   |____|_  /\____/ \___  >__|_ \|___  /\____/__/\_ \
++ *                     \/            \/     \/    \/            \/
++ * $Id: keymap-mr500.c 16056 2008-01-11 21:48:01Z roolku $
++ *
++ * Copyright (C) 2006 Jonathan Gordon
++ *
++ * All files in this archive are subject to the GNU General Public License.
++ * See the file COPYING in the source tree root for full license agreement.
++ *
++ * This software is distributed on an "AS IS" basis, WITHOUT WARRANTY OF ANY
++ * KIND, either express or implied.
++ *
++ ****************************************************************************/
++
++/* Button Code Definitions for touchpad targets */
++#include <stdio.h>
++#include <string.h>
++#include <stdlib.h>
++
++#include "config.h"
++#include "action.h"
++#include "button.h"
++#include "settings.h"
++
++const struct button_mapping* target_get_context_mapping(int context);
++/* How this file is used:
++   get_context_mapping() at the bottom of the file is called by action.c as usual.
++   if the context is for the remote control its then passed straight to
++   target_get_context_mapping().
++   These tables are only used for the touchpad buttons, so at the end of each
++   CONTEXT_CUSTOM2 is OR'ed with the context and then sent to target_get_context_mapping()
++   (NOTE: CONTEXT_CUSTOM2 will be stripped before being sent to make it easier.)
++   In the target keymap, remember to |CONTEXT_CUSTOM2 in the  LAST_ITEM_IN_LIST__NEXTLIST() macro
++   to speed it up a tiny bit... if you dont it will go through these tables first before going
++   back to the target file.
++ */
++
++
++/* touchpad "buttons"
++   screen is split into a 3x3 grid for buttons...
++    BUTTON_TOPLEFT      BUTTON_TOPMIDDLE    BUTTON_TOPRIGHT 
++    BUTTON_MIDLEFT      BUTTON_CENTER       BUTTON_MIDRIGHT
++    BUTTON_BOTTOMLEFT   BUTTON_BOTTOMMIDDLE BUTTON_BOTTOMRIGHT 
++*/
++
++static const struct button_mapping button_context_standard[]  = {
++    { ACTION_STD_PREV,        BUTTON_TOPMIDDLE,                  BUTTON_NONE },
++    { ACTION_STD_PREVREPEAT,  BUTTON_TOPMIDDLE|BUTTON_REPEAT,    BUTTON_NONE },
++    { ACTION_STD_NEXT,        BUTTON_BOTTOMMIDDLE,               BUTTON_NONE },
++    { ACTION_STD_NEXTREPEAT,  BUTTON_BOTTOMMIDDLE|BUTTON_REPEAT, BUTTON_NONE },
++
++    { ACTION_STD_OK,          BUTTON_CENTER|BUTTON_REL,          BUTTON_CENTER },
++    { ACTION_STD_OK,          BUTTON_MIDRIGHT|BUTTON_REL,        BUTTON_MIDRIGHT },
++    { ACTION_STD_OK,          BUTTON_MIDRIGHT|BUTTON_REPEAT,     BUTTON_MIDRIGHT },
++
++    { ACTION_STD_MENU,        BUTTON_TOPLEFT,                    BUTTON_NONE },
++    { ACTION_STD_QUICKSCREEN, BUTTON_TOPLEFT|BUTTON_REPEAT,      BUTTON_NONE },
++    { ACTION_STD_CONTEXT,     BUTTON_CENTER|BUTTON_REPEAT,       BUTTON_CENTER },
++    { ACTION_STD_CANCEL,      BUTTON_MIDLEFT,                BUTTON_NONE },
++    { ACTION_STD_CANCEL,      BUTTON_MIDLEFT|BUTTON_REPEAT,  BUTTON_NONE },
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_STD)
++}; /* button_context_standard */
++
++static const struct button_mapping button_context_wps[]  = {
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_WPS)
++}; /* button_context_wps */
++
++static const struct button_mapping button_context_list[]  = {
++    { ACTION_LISTTREE_PGUP,     BUTTON_TOPRIGHT,                BUTTON_NONE},
++    { ACTION_LISTTREE_PGUP,     BUTTON_TOPRIGHT|BUTTON_REPEAT,  BUTTON_TOPRIGHT},
++    { ACTION_STD_NEXTREPEAT,    BUTTON_CENTER,                  BUTTON_TOPMIDDLE},
++    { ACTION_STD_NEXTREPEAT,    BUTTON_BOTTOMMIDDLE,            BUTTON_CENTER},
++    { ACTION_NONE,              BUTTON_TOPMIDDLE,               BUTTON_NONE },
++    { ACTION_NONE,              BUTTON_BOTTOMMIDDLE,            BUTTON_NONE },
++    { ACTION_STD_PREV,          BUTTON_TOPMIDDLE|BUTTON_REL,    BUTTON_NONE },
++    { ACTION_STD_NEXT,          BUTTON_BOTTOMMIDDLE|BUTTON_REL, BUTTON_NONE },
++    { ACTION_LISTTREE_PGDOWN,   BUTTON_BOTTOMRIGHT,             BUTTON_NONE},
++    { ACTION_LISTTREE_PGDOWN,   BUTTON_BOTTOMRIGHT|BUTTON_REPEAT, BUTTON_BOTTOMRIGHT},
++    { ACTION_STD_PREVREPEAT,    BUTTON_TOPMIDDLE,               BUTTON_CENTER},
++    { ACTION_STD_PREVREPEAT,    BUTTON_CENTER,                  BUTTON_BOTTOMMIDDLE},
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_LIST)
++}; /* button_context_list */
++
++static const struct button_mapping button_context_tree[]  = {
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_CUSTOM2|CONTEXT_TREE)
++}; /* button_context_tree */
++
++static const struct button_mapping button_context_listtree_scroll_with_combo[]  = {
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_CUSTOM|CONTEXT_TREE),
++};
++
++static const struct button_mapping button_context_listtree_scroll_without_combo[]  = {
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_CUSTOM|CONTEXT_TREE),
++};
++
++static const struct button_mapping button_context_settings[]  = {
++    { ACTION_SETTINGS_INC,          BUTTON_TOPMIDDLE,                   BUTTON_NONE },
++    { ACTION_SETTINGS_INCREPEAT,    BUTTON_TOPMIDDLE|BUTTON_REPEAT,     BUTTON_NONE },
++    { ACTION_SETTINGS_DEC,          BUTTON_BOTTOMMIDDLE,                BUTTON_NONE },
++    { ACTION_SETTINGS_DECREPEAT,    BUTTON_BOTTOMMIDDLE|BUTTON_REPEAT,  BUTTON_NONE },
++    { ACTION_STD_OK,                BUTTON_CENTER,                      BUTTON_NONE },
++    { ACTION_STD_CANCEL,            BUTTON_MIDLEFT,                     BUTTON_NONE },
++
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_SETTINGS)
++}; /* button_context_settings */
++
++static const struct button_mapping button_context_settings_right_is_inc[]  = {
++    { ACTION_STD_PREV,          BUTTON_TOPMIDDLE,                   BUTTON_NONE },
++    { ACTION_STD_PREVREPEAT,    BUTTON_TOPMIDDLE|BUTTON_REPEAT,     BUTTON_NONE },
++    { ACTION_STD_NEXT,          BUTTON_BOTTOMMIDDLE,                BUTTON_NONE },
++    { ACTION_STD_NEXTREPEAT,    BUTTON_BOTTOMMIDDLE|BUTTON_REPEAT,  BUTTON_NONE },
++    { ACTION_SETTINGS_INC,          BUTTON_MIDRIGHT,                BUTTON_NONE },
++    { ACTION_SETTINGS_INCREPEAT,    BUTTON_MIDRIGHT|BUTTON_REPEAT,  BUTTON_NONE },
++    { ACTION_SETTINGS_DEC,          BUTTON_MIDLEFT,                 BUTTON_NONE },
++    { ACTION_SETTINGS_DECREPEAT,    BUTTON_MIDLEFT|BUTTON_REPEAT,   BUTTON_NONE },
++    { ACTION_STD_OK,                BUTTON_CENTER,                  BUTTON_NONE },
++    { ACTION_STD_CANCEL,            BUTTON_TOPLEFT,                 BUTTON_NONE },
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_CUSTOM|CONTEXT_SETTINGS)
++}; /* button_context_settingsgraphical */
++
++static const struct button_mapping button_context_yesno[]  = {
++    { ACTION_YESNO_ACCEPT,            BUTTON_MIDLEFT,                 BUTTON_NONE },
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_YESNOSCREEN)
++}; /* button_context_settings_yesno */
++
++static const struct button_mapping button_context_colorchooser[]  = {
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_SETTINGS_COLOURCHOOSER),
++}; /* button_context_colorchooser */
++
++static const struct button_mapping button_context_eq[]  = {
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_SETTINGS_EQ),
++}; /* button_context_eq */
++
++/* Bookmark Screen */
++static const struct button_mapping button_context_bmark[]  = {
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_BOOKMARKSCREEN),
++}; /* button_context_bmark */
++
++static const struct button_mapping button_context_time[]  = {
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_SETTINGS_TIME),
++}; /* button_context_time */
++
++static const struct button_mapping button_context_quickscreen[]  = {
++
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_QUICKSCREEN)
++}; /* button_context_quickscreen */
++
++static const struct button_mapping button_context_pitchscreen[]  = {
++
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_PITCHSCREEN)
++}; /* button_context_pitchcreen */
++
++static const struct button_mapping button_context_keyboard[]  = {
++
++    LAST_ITEM_IN_LIST__NEXTLIST(CONTEXT_CUSTOM2|CONTEXT_KEYBOARD)
++}; /* button_context_keyboard */
++
++const struct button_mapping* get_context_mapping(int context)
++{
++    if ((context&CONTEXT_REMOTE) || (context&CONTEXT_CUSTOM2))
++        return target_get_context_mapping(context&(~CONTEXT_CUSTOM2));
++    
++    switch (context)
++    {
++        case CONTEXT_STD:
++            return button_context_standard;
++        case CONTEXT_WPS:
++            return button_context_wps;
++
++        case CONTEXT_LIST:
++            return button_context_list;
++        case CONTEXT_MAINMENU:
++        case CONTEXT_TREE:
++            if (global_settings.hold_lr_for_scroll_in_list)
++                return button_context_listtree_scroll_without_combo;
++            else
++                return button_context_listtree_scroll_with_combo;
++        case CONTEXT_CUSTOM|CONTEXT_TREE:
++            return button_context_tree;
++
++        case CONTEXT_SETTINGS:
++            return button_context_settings;
++        case CONTEXT_CUSTOM|CONTEXT_SETTINGS:
++            return button_context_settings_right_is_inc;
++
++        case CONTEXT_SETTINGS_COLOURCHOOSER:
++            return button_context_colorchooser;
++        case CONTEXT_SETTINGS_EQ:
++            return button_context_eq;
++
++        case CONTEXT_SETTINGS_TIME:
++            return button_context_time;
++
++        case CONTEXT_YESNOSCREEN:
++            return button_context_yesno;
++        case CONTEXT_BOOKMARKSCREEN:
++            return button_context_bmark;
++        case CONTEXT_QUICKSCREEN:
++            return button_context_quickscreen;
++        case CONTEXT_PITCHSCREEN:
++            return button_context_pitchscreen;
++        case CONTEXT_KEYBOARD:
++            return button_context_keyboard;
++    }
++    return button_context_standard;
++}
+Index: firmware/export/button.h
+===================================================================
+--- firmware/export/button.h	(revision 17107)
++++ firmware/export/button.h	(working copy)
+@@ -64,4 +64,16 @@
+ #define BUTTON_REPEAT   0x04000000
+ #define BUTTON_TOUCHPAD 0x08000000
+ 
++#ifdef HAVE_TOUCHPAD
++enum touchpad_mode {
++    TOUCHPAD_POINT = 0, /* touchpad returns pixel co-ords */
++    TOUCHPAD_BUTTON,    /* touchpad returns BUTTON_* area codes
++                           actual pixel value will still be accessable
++                           from button_get_data */
++};
++/* maybe define the number of buttons in button-target.h ? */
++void touchpad_set_mode(enum touchpad_mode mode);
++enum touchpad_mode touchpad_get_mode(void);
++#endif
++
+ #endif /* _BUTTON_H_ */
+Index: firmware/target/arm/tms320dm320/mrobe-500/button-target.h
+===================================================================
+--- firmware/target/arm/tms320dm320/mrobe-500/button-target.h	(revision 17107)
++++ firmware/target/arm/tms320dm320/mrobe-500/button-target.h	(working copy)
+@@ -53,14 +53,30 @@
+ 
+ #define BUTTON_TOUCH        0x00000200
+ 
+-/* compatibility hacks */
++/* Touchpad Screen Area Buttons */
++#define BUTTON_TOPLEFT      0x00004000
++#define BUTTON_TOPMIDDLE    0x00008000
++#define BUTTON_TOPRIGHT     0x00010000
++#define BUTTON_MIDLEFT      0x00020000
++#define BUTTON_CENTER       0x00040000
++#define BUTTON_MIDRIGHT     0x00080000
++#define BUTTON_BOTTOMLEFT   0x00100000
++#define BUTTON_BOTTOMMIDDLE 0x00200000
++#define BUTTON_BOTTOMRIGHT  0x00400000
++
++/* compatibility hacks
++   not mapped to the touchpad button areas because
++   the touchpad is not always in that mode */
+ #define BUTTON_LEFT     BUTTON_RC_REW
+ #define BUTTON_RIGHT    BUTTON_RC_FF
+ 
+ #define POWEROFF_BUTTON BUTTON_POWER
+ #define POWEROFF_COUNT  10
+ 
+-#define BUTTON_MAIN BUTTON_POWER
++#define BUTTON_MAIN (BUTTON_POWER| \
++                     BUTTON_TOPLEFT|BUTTON_TOPMIDDLE|BUTTON_TOPRIGHT \
++                     BUTTON_MIDLEFT|BUTTON_CENTER|BUTTON_MIDRIGHT \
++                     BUTTON_BOTTOMLEFT|BUTTON_BOTTOMMIDDLE|BUTTON_BOTTOMRIGHT)
+ 
+ #define BUTTON_REMOTE (BUTTON_RC_HEART|BUTTON_RC_MODE|      \
+                        BUTTON_RC_VOL_DOWN|BUTTON_RC_VOL_UP| \
+Index: firmware/target/arm/tms320dm320/mrobe-500/button-mr500.c
+===================================================================
+--- firmware/target/arm/tms320dm320/mrobe-500/button-mr500.c	(revision 17107)
++++ firmware/target/arm/tms320dm320/mrobe-500/button-mr500.c	(working copy)
+@@ -40,6 +40,22 @@
+ static short last_x, last_y, last_z1, last_z2; /* for the touch screen */
+ static bool touch_available = false;
+ 
++static enum touchpad_mode current_mode = TOUCHPAD_POINT;
++static int touchpad_buttons[3][3] = {
++    {BUTTON_TOPLEFT, BUTTON_TOPMIDDLE, BUTTON_TOPRIGHT},
++    {BUTTON_MIDLEFT, BUTTON_CENTER, BUTTON_MIDRIGHT},
++    {BUTTON_BOTTOMLEFT, BUTTON_BOTTOMMIDDLE, BUTTON_BOTTOMRIGHT},
++};
++
++void touchpad_set_mode(enum touchpad_mode mode)
++{
++    current_mode = mode;
++}
++enum touchpad_mode touchpad_get_mode(void)
++{
++    return current_mode;
++}
++
+ static struct touch_calibration_point topleft, bottomright;
+ 
+ /* Jd's tests.. These will hopefully work for everyone so we dont have to
+@@ -165,7 +181,19 @@
+             last_x = x;
+             last_y = y;
+             *data = touch_to_pixels(x, y);
+-            r_button |= BUTTON_TOUCHPAD;
++            switch (current_mode)
++            {
++                case TOUCHPAD_POINT:
++                    r_button |= BUTTON_TOUCHPAD;
++                    break;
++                case TOUCHPAD_BUTTON:
++                {
++                    int px_x = ((*data&0xffff0000)>>16), px_y = ((*data&0x0000ffff));
++                    r_button |= touchpad_buttons[px_y/(LCD_HEIGHT/3)][px_x/(LCD_WIDTH/3)];
++                    oldbutton = r_button;
++                    break;
++                }
++            }
+         }
+         last_touch = current_tick;
+         touch_available = false;
+@@ -219,6 +247,6 @@
+             read_battery_inputs();
+             break;
+     }
+-    touch_available = true;
++    //touch_available = true;
+     IO_INTC_IRQ2 = (1<<3); /* IRQ_GIO14 == 35 */
+ }
+Index: uisimulator/sdl/button.c
+===================================================================
+--- uisimulator/sdl/button.c	(revision 17107)
++++ uisimulator/sdl/button.c	(working copy)
+@@ -32,6 +32,15 @@
+ 
+ #ifdef HAVE_TOUCHPAD
+ static int mouse_coords = 0;
++static enum touchpad_mode touchpad_mode = TOUCHPAD_POINT;
++void touchpad_set_mode(enum touchpad_mode mode)
++{
++    touchpad_mode = mode;
++}
++enum touchpad_mode touchpad_get_mode(void)
++{
++    return touchpad_mode;
++}
+ #endif
+ /* how long until repeat kicks in */
+ #define REPEAT_START      6
+@@ -111,9 +120,53 @@
+ 
+ #ifdef HAVE_TOUCHPAD
+     case BUTTON_TOUCHPAD:
+-        new_btn = BUTTON_TOUCHPAD;
+         data = mouse_coords;
++        switch (touchpad_mode)
++        {
++            case TOUCHPAD_POINT:
++                new_btn = BUTTON_TOUCHPAD;
++                break;
++            case TOUCHPAD_BUTTON:
++            {
++                static int touchpad_buttons[3][3] = {
++                    {BUTTON_TOPLEFT, BUTTON_TOPMIDDLE, BUTTON_TOPRIGHT},
++                    {BUTTON_MIDLEFT, BUTTON_CENTER, BUTTON_MIDRIGHT},
++                    {BUTTON_BOTTOMLEFT, BUTTON_BOTTOMMIDDLE, BUTTON_BOTTOMRIGHT},
++                };
++                int px_x = ((data&0xffff0000)>>16), px_y = ((data&0x0000ffff));
++                new_btn = touchpad_buttons[px_y/(LCD_HEIGHT/3)][px_x/(LCD_WIDTH/3)];
++                break;
++            }
++        }
+         break;
++    case SDLK_KP7:
++        new_btn = BUTTON_TOPLEFT;
++        break;
++    case SDLK_KP8:
++        new_btn = BUTTON_TOPMIDDLE;
++        break;
++    case SDLK_KP9:
++        new_btn = BUTTON_TOPRIGHT;
++        break;
++    case SDLK_KP4:
++        new_btn = BUTTON_MIDLEFT;
++        break;
++    case SDLK_KP5:
++        new_btn = BUTTON_CENTER;
++        break;
++    case SDLK_KP6:
++        new_btn = BUTTON_MIDRIGHT;
++        break;
++    case SDLK_KP1:
++        new_btn = BUTTON_BOTTOMLEFT;
++        break;
++    case SDLK_KP2:
++        new_btn = BUTTON_BOTTOMMIDDLE;
++        break;
++    case SDLK_KP3:
++        new_btn = BUTTON_BOTTOMRIGHT;
++        break;
++            
+ #endif
+     case SDLK_u:
+         if (!pressed)
+@@ -665,43 +718,34 @@
+         break;
+         
+ #elif CONFIG_KEYPAD == MROBE500_PAD
+-    case SDLK_KP4:
++    case SDLK_F9:
++        new_btn = BUTTON_RC_HEART;
++        break;
++    case SDLK_F10:
++        new_btn = BUTTON_RC_MODE;
++        break;
++    case SDLK_F11:
++        new_btn = BUTTON_RC_VOL_DOWN;
++        break;
++    case SDLK_F12:
++        new_btn = BUTTON_RC_VOL_UP;
++        break;
+     case SDLK_LEFT:
+         new_btn = BUTTON_LEFT;
+         break;
+-    case SDLK_KP6:
+     case SDLK_RIGHT:
+         new_btn = BUTTON_RIGHT;
+         break;
+-    case SDLK_KP8:
+     case SDLK_UP:
+         new_btn = BUTTON_RC_PLAY;
+         break;
+-    case SDLK_KP2:
+     case SDLK_DOWN:
+         new_btn = BUTTON_RC_DOWN;
+         break;
+-    case SDLK_KP_PLUS:
+     case SDLK_F8:
+-        new_btn = BUTTON_POWER;
+-        break;
+     case SDLK_ESCAPE:
+         new_btn = BUTTON_POWER;
+         break;
+-    case SDLK_KP_ENTER:
+-    case SDLK_RETURN:
+-    case SDLK_a:
+-        new_btn = BUTTON_RC_VOL_UP;
+-        break;
+-    case SDLK_KP5:
+-    case SDLK_SPACE:
+-        new_btn = BUTTON_RC_HEART;
+-        break;
+-    case SDLK_KP_PERIOD:
+-    case SDLK_INSERT:
+-        new_btn = BUTTON_RC_MODE;
+-        break;
+-
+ #elif CONFIG_KEYPAD == MROBE100_PAD
+     case SDLK_KP1:
+         new_btn = BUTTON_DISPLAY;
+@@ -977,11 +1021,6 @@
+         if (debug_wps)
+             printf("Mouse at: (%d, %d)\n", x, y);
+     }
+-    else if (lastbtn == BUTTON_TOUCHPAD)
+-    {
+-        button_event(BUTTON_TOUCHPAD, false);
+-        mouse_coords = 0;
+-    }
+ }
+ #endif
+ void button_init(void)
+Index: uisimulator/sdl/uisdl.c
+===================================================================
+--- uisimulator/sdl/uisdl.c	(revision 17107)
++++ uisimulator/sdl/uisdl.c	(working copy)
+@@ -83,6 +83,12 @@
+                     printf("Mouse at: (%d, %d)\n", event.button.x, event.button.y);
+                 }
+                 break;
++#else 
++            case SDL_MOUSEBUTTONUP:
++                sim_enter_irq_handler();
++                button_event(BUTTON_TOUCHPAD, false);
++                sim_exit_irq_handler();
++                break;
+ #endif
+             case SDL_QUIT:
+                 done = true;
