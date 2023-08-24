@@ -1,0 +1,536 @@
+Index: apps/action.c
+===================================================================
+--- apps/action.c	(revision 14945)
++++ apps/action.c	(working copy)
+@@ -119,7 +119,7 @@
+     {
+         return button;
+     }
+-    
++        
+     if ((context != last_context) && ((last_button&BUTTON_REL) == 0))
+     {
+         if (button&BUTTON_REL)
+@@ -132,7 +132,11 @@
+         return ACTION_NONE; /* "safest" return value */
+     }
+     last_context = context;
+-    
++    if (button&BUTTON_TOUCHPAD)
++    {
++        last_button = button;
++        return ACTION_TOUCHPAD;
++    }
+ #ifndef HAS_BUTTON_HOLD
+     screen_has_lock = ((context&ALLOW_SOFTLOCK)==ALLOW_SOFTLOCK);
+     if (screen_has_lock && (keys_locked == true))
+Index: apps/action.h
+===================================================================
+--- apps/action.h	(revision 14945)
++++ apps/action.h	(working copy)
+@@ -78,6 +78,7 @@
+     ACTION_NONE = BUTTON_NONE,
+     ACTION_UNKNOWN,
+     ACTION_REDRAW, /* returned if keys are locked and we splash()'ed */
++    ACTION_TOUCHPAD,
+     
+     /* standard actions, use these first */
+     ACTION_STD_PREV, 
+Index: apps/tree.c
+===================================================================
+--- apps/tree.c	(revision 14945)
++++ apps/tree.c	(working copy)
+@@ -606,7 +606,8 @@
+ #endif
+         button = get_action(CONTEXT_TREE,HZ/5);
+         oldbutton = button;
+-        need_update = gui_synclist_do_button(&tree_lists, &button,LIST_WRAP_UNLESS_HELD);
++        need_update = gui_synclist_do_button(&tree_lists, 
++                                             &button, LIST_WRAP_UNLESS_HELD);
+         tc.selected_item = gui_synclist_get_sel_pos(&tree_lists);
+         switch ( button ) {
+             case ACTION_STD_OK:
+Index: apps/gui/list.c
+===================================================================
+--- apps/gui/list.c	(revision 14945)
++++ apps/gui/list.c	(working copy)
+@@ -911,6 +911,90 @@
+ 
+ extern intptr_t get_action_data(void);
+ 
++#if defined( SIMULATOR) || defined(HAVE_TOUCHPAD)
++unsigned gui_synclist_do_touchpad(struct gui_synclist * lists)
++{
++    struct gui_list *gui_list = &(lists->gui_list[SCREEN_MAIN]);
++    unsigned button, oldlastbutton;
++    static unsigned last_button;
++    short x,y;
++    int line;
++    get_action_statuscode(&button);
++    x = (button_get_data()&0xffff0000)>>16;
++    y = (button_get_data()&0xffff);
++    
++    /* top left corner is hopefully GO_TO_ROOT */
++    if (x<STATUSBAR_HEIGHT && y<STATUSBAR_HEIGHT)
++    {
++        if ((button&BUTTON_REL) && !(last_button&BUTTON_REPEAT))
++            return ACTION_STD_MENU;
++        else if (button&BUTTON_REPEAT)
++            return ACTION_STD_QUICKSCREEN;
++        else
++            return ACTION_NONE;
++    }
++    /* pressing on the scroll bar will scroll the view */
++    else if (x < SCROLLBAR_WIDTH*2)
++    {
++        int new_selection, nb_lines;
++        int height, size;
++        nb_lines = gui_list->display->nb_lines - SHOW_LIST_TITLE;
++        if (nb_lines <  gui_list->nb_items)
++        {
++            height = nb_lines * gui_list->display->char_height;
++            size = height*nb_lines / gui_list->nb_items;
++            new_selection = (y*(gui_list->nb_items-nb_lines))/(height-size);
++            gui_synclist_select_item(lists, new_selection);
++            nb_lines /= 2;
++            if (new_selection - gui_list->start_item > nb_lines)
++            {
++                new_selection = gui_list->start_item+nb_lines;
++            }
++            FOR_NB_SCREENS(line)
++                lists->gui_list[line].selected_item = new_selection;
++            return ACTION_REDRAW;
++        }
++    }
++        
++        
++    if (!(button&(BUTTON_REL|BUTTON_REPEAT)) && (x > SCROLLBAR_WIDTH+4))
++        return ACTION_NONE;
++        
++    oldlastbutton = last_button;
++    last_button = button;
++    
++    if (button&BUTTON_REL && oldlastbutton&BUTTON_REPEAT)
++    {
++        return ACTION_NONE;
++    }
++    
++    
++    if (global_settings.statusbar)
++    {
++        if (y < STATUSBAR_HEIGHT && !SHOW_LIST_TITLE && (x > SCROLLBAR_WIDTH+4))
++            return ACTION_STD_CANCEL;
++        y -= STATUSBAR_HEIGHT;
++    }
++    /* title goes up one level */
++    if (SHOW_LIST_TITLE)
++    {
++        if (y < gui_list->display->char_height)
++            return ACTION_STD_CANCEL;
++        y -= gui_list->display->char_height;
++    }
++    /* pressing an item will select it.
++       pressing the selected item will "enter" it */
++    line = y / gui_list->display->char_height;
++    if (line != gui_list->selected_item - gui_list->start_item)
++        gui_synclist_select_item(lists, gui_list->start_item+line);
++    
++    if (button&BUTTON_REPEAT)
++        return ACTION_STD_CONTEXT;
++    else
++        return ACTION_STD_OK;
++}
++#endif
++
+ bool gui_synclist_do_button(struct gui_synclist * lists,
+                             unsigned *actionptr, enum list_wrap wrap)
+ {
+@@ -950,6 +1034,11 @@
+         }
+     }
+ #endif
++    
++#if defined( SIMULATOR) || defined(HAVE_TOUCHPAD)
++    if (action == ACTION_TOUCHPAD)
++        action = *actionptr = gui_synclist_do_touchpad(lists);
++#endif
+ 
+     switch (wrap)
+     {
+@@ -971,6 +1060,10 @@
+ 
+     switch (action)
+     {
++        case ACTION_REDRAW:
++            gui_synclist_draw(lists);
++            return true;
++            
+ #ifdef HAVE_VOLUME_IN_LIST
+         case ACTION_LIST_VOLUP:
+             global_settings.volume += 2; 
+Index: apps/gui/quickscreen.c
+===================================================================
+--- apps/gui/quickscreen.c	(revision 14945)
++++ apps/gui/quickscreen.c	(working copy)
+@@ -30,6 +30,7 @@
+ #include "misc.h"
+ #include "statusbar.h"
+ #include "action.h"
++#include "sysfont.h"
+ 
+ void gui_quickscreen_init(struct gui_quickscreen * qs,
+                           struct option_select *left_option,
+@@ -141,7 +142,35 @@
+  */
+ static bool gui_quickscreen_do_button(struct gui_quickscreen * qs, int button)
+ {
+-
++#if defined( SIMULATOR) || defined(HAVE_TOUCHPAD)
++    if (button == ACTION_TOUCHPAD)
++    {
++        int x,y;
++        int char_height;
++        struct screen *display = &screens[SCREEN_MAIN];
++        get_action_statuscode(&button);
++        x = (button_get_data()&0xffff0000)>>16;
++        y = (button_get_data()&0xffff);
++        if (!(button&(BUTTON_REL)))
++            return true;
++        if (display->height / display->char_height < 7)
++            char_height = SYSFONT_HEIGHT;
++        else 
++            char_height = display->char_height;
++            
++        /* check bottom button first, easiest... */
++        if (y > display->height - char_height*4)
++            return gui_quickscreen_do_button(qs, ACTION_QS_DOWN);
++        /* check top right corner to exit screen */
++        if (y < char_height*3 &&
++            x > display->width/2)
++            return false;
++        if (x < display->width/2)
++            return gui_quickscreen_do_button(qs, ACTION_QS_LEFT);
++        else
++            return gui_quickscreen_do_button(qs, ACTION_QS_RIGHT);
++    }
++#endif
+     switch(button)
+     {
+         case ACTION_QS_LEFT:
+@@ -186,6 +215,10 @@
+         }
+         else if(button==button_enter)
+             can_quit=true;
++#if defined( SIMULATOR) || defined(HAVE_TOUCHPAD)
++        else if (button == ACTION_TOUCHPAD)
++            break;
++#endif
+             
+         if((button == button_enter) && can_quit)
+             break;
+Index: apps/gui/gwps.c
+===================================================================
+--- apps/gui/gwps.c	(revision 14945)
++++ apps/gui/gwps.c	(working copy)
+@@ -91,6 +91,31 @@
+     gwps->display->setmargins(0, offset);
+ }
+ #endif
++unsigned touchaction(struct gui_wps *gwps)
++{
++    struct wps_data *data;
++    unsigned button;
++    int x,y, i;
++    get_action_statuscode(&button);
++    x = (button_get_data()&0xffff0000)>>16;
++    y = (button_get_data()&0xffff);
++    data = gwps[SCREEN_MAIN].data;
++    DEBUGF("X:%d y:%d count:%d\n", x, y, data->num_touchregions);
++    for (i=0;i<data->num_touchregions;i++)
++    {
++        if (x > data->touch_regions[i].x &&
++            x < (data->touch_regions[i].x + data->touch_regions[i].width) &&
++            y > data->touch_regions[i].y &&
++            y < (data->touch_regions[i].y + data->touch_regions[i].height))
++        {
++            DEBUGF("found\n");
++            if ((data->touch_regions[i].repeat && (button&BUTTON_REPEAT)) ||
++                (!data->touch_regions[i].repeat && (button&BUTTON_REL)))
++                return data->touch_regions[i].action;
++        }
++    }
++    return ACTION_NONE;
++}
+ 
+ long gui_wps_show(void)
+ {
+@@ -204,7 +229,8 @@
+ #else
+         button = get_action(CONTEXT_WPS|ALLOW_SOFTLOCK,HZ/5);
+ #endif
+-
++        if (button == ACTION_TOUCHPAD)
++            button = touchaction(gui_wps);
+         /* Exit if audio has stopped playing. This can happen if using the
+            sleep timer with the charger plugged or if starting a recording
+            from F1 */
+Index: apps/gui/gwps.h
+===================================================================
+--- apps/gui/gwps.h	(revision 14945)
++++ apps/gui/gwps.h	(working copy)
+@@ -66,6 +66,16 @@
+     char* right;
+ };
+ 
++#define MAX_WPS_TOUCH_REGIONS 16
++struct touch_region {
++    int x;
++    int y;
++    int width;
++    int height;
++    int action;
++    bool repeat;
++};
++
+ #ifdef HAVE_LCD_BITMAP
+ 
+ #define MAX_IMAGES (26*2) /* a-z and A-Z */
+@@ -336,6 +346,10 @@
+     char string_buffer[STRING_BUFFER_SIZE];
+     char *strings[WPS_MAX_STRINGS];
+     int num_strings;
++    
++    /* touchpad/mouse regions */
++    int num_touchregions;
++    struct touch_region touch_regions[MAX_WPS_TOUCH_REGIONS];
+ 
+     bool wps_loaded;
+ };
+Index: apps/gui/wps_parser.c
+===================================================================
+--- apps/gui/wps_parser.c	(revision 14945)
++++ apps/gui/wps_parser.c	(working copy)
+@@ -126,6 +126,9 @@
+         struct wps_token *token, struct wps_data *wps_data);
+ #endif /*HAVE_LCD_BITMAP */
+ 
++static int parse_region_tag(const char *wps_bufptr,
++                           struct wps_token *token,
++                           struct wps_data *wps_data);
+ #ifdef CONFIG_RTC
+ #define WPS_RTC_REFRESH WPS_REFRESH_DYNAMIC
+ #else
+@@ -288,6 +291,8 @@
+ #endif
+ #endif
+ 
++    { WPS_NO_TOKEN,                       "R",   0, parse_region_tag },
++    
+     { WPS_TOKEN_UNKNOWN,                  "",    0, NULL }
+     /* the array MUST end with an empty string (first char is \0) */
+ };
+@@ -872,6 +877,83 @@
+     return (fail == 0);
+ }
+ 
++static int parse_region_tag(const char *wps_bufptr,
++                           struct wps_token *token,
++                           struct wps_data *wps_data)
++{
++    struct touch_region *region;
++    char *s,*e, *nl = strchr(wps_bufptr, '\n');
++    int len = nl - wps_bufptr;
++    /* FORMAT %#|x|y|w|h|[&]action| */
++    if (wps_data->num_touchregions >= MAX_WPS_TOUCH_REGIONS)
++        return len;
++    region = &wps_data->touch_regions[wps_data->num_touchregions];
++    s = strchr(wps_bufptr, '|');
++    if (!s) return len;
++    s++;
++    e = strchr(s, '|');
++    if (!e) return len;
++    *e = '\0';
++    region->x = atoi(s);
++    s = e+1;
++    e = strchr(s, '|');
++    if (!e) return len;
++    *e = '\0';
++    region->y = atoi(s);
++    s = e+1;
++    e = strchr(s, '|');
++    if (!e) return len;
++    *e = '\0';
++    region->width = atoi(s);
++    s = e+1;
++    e = strchr(s, '|');
++    if (!e) return len;
++    *e = '\0';
++    region->height = atoi(s);
++    s = e+1;
++    e = strchr(s, '|');
++    if (!e) return len;
++    *e = '\0';
++    /* now figure out the action */
++    if (*s == '&') /* repeat */
++    {
++        region->repeat = true;
++        s++;
++    }
++    if (!strcmp(s, "browse"))
++        region->action = ACTION_WPS_BROWSE;
++    else if (!strcmp(s, "play"))
++        region->action = ACTION_WPS_PLAY;
++    else if (!strcmp(s, "rewind"))
++        region->action = ACTION_WPS_SEEKBACK;
++    else if (!strcmp(s, "ffwd"))
++        region->action = ACTION_WPS_SEEKFWD;
++    else if (!strcmp(s, "next"))
++        region->action = ACTION_WPS_SKIPNEXT;
++    else if (!strcmp(s, "prev"))
++        region->action = ACTION_WPS_SKIPPREV;
++    else if (!strcmp(s, "stop"))
++        region->action = ACTION_WPS_STOP;
++    else if (!strcmp(s, "vol-"))
++        region->action = ACTION_WPS_VOLDOWN;
++    else if (!strcmp(s, "vol+"))
++        region->action = ACTION_WPS_VOLUP;
++    else if (!strcmp(s, "pitchscreen"))
++        region->action = ACTION_WPS_PITCHSCREEN;
++    else if (!strcmp(s, "id3screen"))
++        region->action = ACTION_WPS_ID3SCREEN;
++    else if (!strcmp(s, "context"))
++        region->action = ACTION_WPS_CONTEXT;
++    else if (!strcmp(s, "quickscreen"))
++        region->action = ACTION_WPS_QUICKSCREEN;
++    else if (!strcmp(s, "menu"))
++        region->action = ACTION_WPS_MENU;
++    else if (!strcmp(s, "rec"))
++        region->action = ACTION_WPS_REC;
++    wps_data->num_touchregions++;
++    return len;
++}
++
+ #ifdef HAVE_LCD_BITMAP
+ /* Clear the WPS image cache */
+ static void wps_images_clear(struct wps_data *data)
+Index: uisimulator/sdl/button.c
+===================================================================
+--- uisimulator/sdl/button.c	(revision 14945)
++++ uisimulator/sdl/button.c	(working copy)
+@@ -88,6 +88,30 @@
+ }
+ #endif
+ 
++void mouse_event(short x, short y, bool pressed)
++{
++    static int last_data;
++    int data = ((x&0xffff)<<16)|(y&0xffff);
++    static int last_press = 0;
++    btn = BUTTON_TOUCHPAD;
++    if (!pressed)
++        btn |= BUTTON_REL;
++    if (x == -1 && y == -1)
++    {
++        if (current_tick > last_press + 40)
++        {
++            data = last_data;
++            btn |= BUTTON_REPEAT;
++        }
++        else
++            return;
++    }
++    else last_data = data;
++    last_press = current_tick;
++    queue_syncpost(&button_queue, btn, data);
++    btn &= ~(BUTTON_REL|BUTTON_REPEAT);
++}
++
+ void button_event(int key, bool pressed)
+ {
+     int new_btn = 0;
+@@ -105,6 +129,8 @@
+ #endif
+ #endif 
+     static bool usb_connected = false;
++    if (btn&BUTTON_TOUCHPAD)
++        btn = BUTTON_NONE;
+     if (usb_connected && key != SDLK_u)
+         return;
+     switch (key)
+@@ -762,6 +788,8 @@
+ 
+ intptr_t button_get_data(void)
+ {
++    if (btn&BUTTON_TOUCHPAD)
++        return button_data;
+     /* Needed by the accelerating wheel driver for Sansa e200 */
+     return 1 << 24;
+ }
+Index: uisimulator/sdl/uisdl.c
+===================================================================
+--- uisimulator/sdl/uisdl.c	(revision 14945)
++++ uisimulator/sdl/uisdl.c	(working copy)
+@@ -46,6 +46,7 @@
+ extern void                 sim_io_shutdown(void);
+ 
+ void button_event(int key, bool pressed);
++void mouse_event(short x, short y, bool pressed);
+ 
+ SDL_Surface *gui_surface;
+ bool background = false;        /* Don't use backgrounds by default */
+@@ -85,9 +86,23 @@
+ {
+     SDL_Event event;
+     bool done = false;
++    bool mouse_down = false;
+ 
+-    while(!done && SDL_WaitEvent(&event))
++    while(!done)
+     {
++        if (mouse_down)
++        {
++            if (SDL_PollEvent(&event) == 0)
++            {
++                Uint8 keystate = SDL_GetMouseState(NULL, NULL);
++                if(keystate & SDL_BUTTON(1))
++                    mouse_event(-1,-1,true);
++                continue;
++            }
++        }
++        else 
++            SDL_WaitEvent(&event);
++        
+         switch(event.type)
+         {
+             case SDL_KEYDOWN:
+@@ -99,6 +114,30 @@
+             case SDL_QUIT:
+                 done = true;
+                 break;
++            case SDL_MOUSEBUTTONDOWN:
++                if (event.button.button == SDL_BUTTON_LEFT)
++                {
++                    mouse_down = true;
++                    mouse_event(event.button.x - (background ? UI_LCD_POSX : 0),
++                                event.button.y - (background ? UI_LCD_POSY : 0),
++                                true);
++                }
++                break;
++            case SDL_MOUSEBUTTONUP:
++                if (event.button.button == SDL_BUTTON_LEFT)
++                {
++                    mouse_down = false;
++                    mouse_event(event.button.x - (background ? UI_LCD_POSX : 0),
++                                event.button.y - (background ? UI_LCD_POSY : 0),
++                                false);
++                }
++                break;
++            case SDL_MOUSEMOTION:
++                if (event.motion.state&SDL_BUTTON(1))
++                    mouse_event(event.motion.x - (background ? UI_LCD_POSX : 0),
++                                event.motion.y - (background ? UI_LCD_POSY : 0),
++                                true);
++                break;
+             default:
+                 /*printf("Unhandled event\n"); */
+                 break;
