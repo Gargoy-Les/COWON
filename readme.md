@@ -1,6 +1,6 @@
-一些关于cowon d2的资源
+# 一些关于COWON PMP的资源(Some resources about the Cowon PMP)
 
-Some resources about the Cowon d2
+
 
 我已经将Rockbox网站中cowon d2的论坛中的关于移植的内容的部分镜像
 
